@@ -258,6 +258,10 @@ rm ~/.local/bin/uv ~/.local/bin/uvx
 rm -rf ~/.local/share/uv ~/.cache/uv
 ```
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 ## Project status
 
 Personal tool for single-host setups. Not packaged for general distribution;
