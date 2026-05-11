@@ -142,19 +142,38 @@ $ clashctl reload
 reloaded from /home/kvzn/clash/AgentNEO_wLUA.yaml
 ```
 
-### `clashctl logs [<journalctl args>...]`
+### `clashctl logs [--raw] [<journalctl args>...]`
 
-Pass-through wrapper around `sudo journalctl -u clash.service`.
+Wraps `sudo journalctl -u clash.service`. By default the output is
+**re-formatted**:
+
+- journalctl's hostname / PID prefix is stripped (`--output=cat`)
+- mihomo's `logfmt` line is parsed, only `HH:MM:SS` of the timestamp is shown
+- log level is color-coded (`info` cyan, `warning` yellow, `error` red,
+  `fatal` bright red)
+
+```
+$ clashctl logs -n 5
+13:13:42 info    [TCP] 127.0.0.1:34220 --> registry.npmjs.org:443 match DomainSuffix(npmjs.org) using ⚡️ 代理[x1.0 韩国 - 中转1]
+13:13:45 info    [TCP] 127.0.0.1:34316 --> chatgpt.com:443 match DomainSuffix(chatgpt.com) using ⚡️ 代理[x1.0 韩国 - 中转1]
+13:14:00 warning [TCP] dial ⚡️ 代理 (match DomainSuffix/telegram.org) … connect error: context deadline exceeded
+```
+
+Compared to the raw journalctl output this saves ~70 chars per line and the
+level colouring makes warnings/errors jump out.
+
+Extra args are forwarded to journalctl:
 
 ```bash
 clashctl logs -n 50              # last 50 lines
 clashctl logs -f                 # follow new entries
 clashctl logs --since "10 min ago"
-clashctl logs --grep "REJECT"
+clashctl logs --grep REJECT
+clashctl logs --raw -f           # original journalctl format (no parsing)
 ```
 
-(Assumes the systemd unit is named `clash.service`. Adjust the constant in the
-source if yours is named differently.)
+(Assumes the systemd unit is named `clash.service`. Adjust the constant in
+the source if yours is named differently.)
 
 ### `clashctl test [<url>]`
 

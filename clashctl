@@ -19,6 +19,7 @@ Environment overrides:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import urllib.parse
@@ -33,6 +34,18 @@ YAML_PATH = Path(
     os.environ.get("CLASH_YAML", str(Path.home() / "clash" / "AgentNEO_wLUA.yaml"))
 )
 GROUP_TYPES = ("Selector", "URLTest", "Fallback", "LoadBalance")
+
+# mihomo emits logfmt lines like:
+#   time="2026-05-11T13:13:42.144+08:00" level=info msg="..."
+_LOG_LINE = re.compile(r'^time="([^"]+)" level=(\w+) msg="(.*)"\s*$')
+_LEVEL_FG = {
+    "debug": "bright_black",
+    "info": "cyan",
+    "warn": "yellow",
+    "warning": "yellow",
+    "error": "red",
+    "fatal": "bright_red",
+}
 
 
 def _request(method: str, path: str, json_body: dict | None = None):
@@ -150,11 +163,50 @@ def reload():
 
 
 @cli.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.option("--raw", is_flag=True, help="Pass journalctl output through unmodified.")
 @click.pass_context
-def logs(ctx):
-    """Tail clash systemd logs (passes extra args to journalctl)."""
-    cmd = ["sudo", "journalctl", "-u", "clash.service", *ctx.args]
-    os.execvp("sudo", cmd)
+def logs(ctx, raw):
+    """Tail clash systemd logs.
+
+    Default: strip journalctl's hostname/PID prefix, parse mihomo's logfmt,
+    show only HH:MM:SS, colorize by level. Use --raw to disable formatting
+    (e.g. when piping into another tool that wants the original format).
+
+    Any extra args are passed to journalctl, e.g.::
+
+        clashctl logs -n 50
+        clashctl logs -f
+        clashctl logs --since "10 min ago"
+        clashctl logs --grep REJECT
+    """
+    extra = list(ctx.args)
+    base = ["sudo", "journalctl", "-u", "clash.service"]
+    if raw:
+        os.execvp(base[0], base + extra)
+
+    cmd = base + ["--output=cat", *extra]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, bufsize=1)
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            m = _LOG_LINE.match(line)
+            if not m:
+                click.echo(line)
+                continue
+            ts, level, msg = m.groups()
+            hms = ts[11:19] if len(ts) >= 19 else ts
+            level_styled = click.style(f"{level:<7}", fg=_LEVEL_FG.get(level))
+            click.echo(f"{hms} {level_styled} {msg}")
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        sys.exit(proc.returncode or 0)
 
 
 @cli.command()
