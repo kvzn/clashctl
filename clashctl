@@ -1,0 +1,188 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "click>=8",
+#     "httpx>=0.27",
+#     "PyYAML>=6",
+# ]
+# ///
+"""clashctl - control local mihomo proxy via external-controller API.
+
+Subcommands persist mode and per-group selections to the YAML config so that
+changes survive `systemctl restart clash` and subscription refresh.
+
+Environment overrides:
+  CLASH_API   default http://127.0.0.1:9090
+  CLASH_YAML  default $HOME/clash/AgentNEO_wLUA.yaml
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import urllib.parse
+from pathlib import Path
+
+import click
+import httpx
+import yaml
+
+API = os.environ.get("CLASH_API", "http://127.0.0.1:9090")
+YAML_PATH = Path(
+    os.environ.get("CLASH_YAML", str(Path.home() / "clash" / "AgentNEO_wLUA.yaml"))
+)
+GROUP_TYPES = ("Selector", "URLTest", "Fallback", "LoadBalance")
+
+
+def _request(method: str, path: str, json_body: dict | None = None):
+    url = f"{API}{path}"
+    try:
+        r = httpx.request(method, url, json=json_body, timeout=5.0)
+        r.raise_for_status()
+        return r.json() if r.content else None
+    except httpx.HTTPError as e:
+        click.echo(f"API error ({method} {url}): {e}", err=True)
+        sys.exit(1)
+
+
+def _enc(name: str) -> str:
+    return urllib.parse.quote(name, safe="")
+
+
+def _yaml_load() -> dict:
+    with YAML_PATH.open() as f:
+        return yaml.safe_load(f) or {}
+
+
+def _yaml_save(data: dict) -> None:
+    with YAML_PATH.open("w") as f:
+        yaml.safe_dump(
+            data, f, allow_unicode=True, sort_keys=False, default_flow_style=False
+        )
+
+
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option("0.1.0", "-V", "--version")
+def cli():
+    """Control local mihomo proxy."""
+
+
+@cli.command()
+def info():
+    """Show version, mode and ports."""
+    v = _request("GET", "/version")
+    c = _request("GET", "/configs")
+    click.echo(f"mihomo {v.get('version')}  meta={v.get('meta')}")
+    for k in ("mode", "log-level", "port", "socks-port", "mixed-port"):
+        click.echo(f"  {k:14} {c.get(k)}")
+
+
+@cli.command()
+def groups():
+    """List proxy groups with current selection."""
+    d = _request("GET", "/proxies")["proxies"]
+    for name, info in d.items():
+        if info["type"] in GROUP_TYPES:
+            now = info.get("now", "-")
+            n = len(info.get("all", []))
+            click.echo(f"{info['type']:9} {name:<22} → {now:<28} ({n} nodes)")
+
+
+@cli.command()
+@click.argument("group")
+def proxies(group):
+    """List nodes inside a group."""
+    d = _request("GET", f"/proxies/{_enc(group)}")
+    click.echo(f"{d['name']} ({d['type']}) → {d.get('now', '-')}")
+    for p in d.get("all", []):
+        click.echo((" → " if p == d.get("now") else "   ") + p)
+
+
+@cli.command()
+@click.argument("group")
+@click.argument("node")
+def select(group, node):
+    """Switch a group to a specific node (persistent)."""
+    _request("PUT", f"/proxies/{_enc(group)}", json_body={"name": node})
+    data = _yaml_load()
+    for pg in data.get("proxy-groups", []):
+        if pg.get("name") == group:
+            ps = pg.get("proxies", [])
+            if node in ps:
+                ps.remove(node)
+                ps.insert(0, node)
+                pg["proxies"] = ps
+                _yaml_save(data)
+            else:
+                click.echo(
+                    f"warning: '{node}' not listed in group '{group}' (api applied, yaml unchanged)",
+                    err=True,
+                )
+            break
+    else:
+        click.echo(
+            f"warning: group '{group}' not found in yaml (api applied, yaml unchanged)",
+            err=True,
+        )
+    click.echo(f"selected: {group} → {node}")
+
+
+@cli.command()
+@click.argument("new_mode", required=False)
+def mode(new_mode):
+    """Show or set routing mode (Rule | Global | Direct). Persistent."""
+    if not new_mode:
+        click.echo(_request("GET", "/configs")["mode"])
+        return
+    _request("PATCH", "/configs", json_body={"mode": new_mode})
+    data = _yaml_load()
+    data["mode"] = new_mode
+    _yaml_save(data)
+    click.echo(f"mode set to: {new_mode}")
+
+
+@cli.command()
+def reload():
+    """Reload config from yaml on disk."""
+    _request("PUT", "/configs", json_body={"path": str(YAML_PATH)})
+    click.echo(f"reloaded from {YAML_PATH}")
+
+
+@cli.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.pass_context
+def logs(ctx):
+    """Tail clash systemd logs (passes extra args to journalctl)."""
+    cmd = ["sudo", "journalctl", "-u", "clash.service", *ctx.args]
+    os.execvp("sudo", cmd)
+
+
+@cli.command()
+@click.argument("url", required=False, default="https://ipinfo.io/ip")
+def test(url):
+    """Compare proxied vs direct fetch."""
+    for label, proxy_args in (("PROXY ", ["-x", "http://127.0.0.1:7890"]), ("DIRECT", [])):
+        try:
+            r = subprocess.run(
+                ["curl", "-sS", "--max-time", "6", *proxy_args, url],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            click.echo(f"{label}: {r.stdout.strip() or '(empty)'}")
+        except Exception as e:
+            click.echo(f"{label}: (failed: {e})")
+
+
+@cli.command()
+@click.argument("group")
+def delay(group):
+    """Measure delay of every node in a group."""
+    test_url = urllib.parse.quote("https://www.gstatic.com/generate_204", safe="")
+    d = _request("GET", f"/group/{_enc(group)}/delay?url={test_url}&timeout=3000")
+    for name, ms in sorted(d.items(), key=lambda x: (x[1] == 0, x[1])):
+        click.echo(f"  {ms:>5} ms   {name}")
+
+
+if __name__ == "__main__":
+    cli()
