@@ -8,7 +8,7 @@
 #   BIN_PATH=$HOME/.local/bin/clashctl SCRIPT_REF=main bash install.sh
 set -euo pipefail
 
-BIN_PATH="${BIN_PATH:-/usr/local/bin/clashctl}"
+BIN_PATH="${BIN_PATH:-$HOME/.local/bin/clashctl}"
 SCRIPT_REF="${SCRIPT_REF:-main}"
 SCRIPT_URL="${SCRIPT_URL:-https://raw.githubusercontent.com/kvzn/clashctl/${SCRIPT_REF}/clashctl}"
 
