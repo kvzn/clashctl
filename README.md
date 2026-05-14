@@ -8,6 +8,24 @@ YAML config so changes survive `systemctl restart` and subscription refresh.
 
 ---
 
+## Contents
+
+- [Why](#why)
+- [Requirements](#requirements)
+- [Install](#install) — [client-only](#client-only) · [full server bootstrap](#full-server-bootstrap)
+- [Configuration](#configuration)
+- [Commands](#commands)
+  - [`info`](#clashctl-info) · [`groups`](#clashctl-groups) · [`proxies`](#clashctl-proxies-group)
+  - [`select`](#clashctl-select-group-node) · [`mode`](#clashctl-mode-rule--global--direct) · [`reload`](#clashctl-reload)
+  - [`logs`](#clashctl-logs---raw-journalctl-args) · [`test`](#clashctl-test-url) · [`delay`](#clashctl-delay-group)
+  - [`start` / `stop` / `restart` / `status`](#clashctl-start--stop--restart--status)
+- [Cheat sheet](#cheat-sheet)
+- [Persistence](#persistence)
+- [How it works](#how-it-works)
+- [Uninstall](#uninstall)
+
+---
+
 ## Why
 
 mihomo ships as a daemon — its CLI surface is `mihomo -f config.yaml`. For
@@ -67,6 +85,20 @@ Custom install path:
 BIN_PATH=/usr/local/bin/clashctl \
   curl -fsSL https://raw.githubusercontent.com/kvzn/clashctl/main/install.sh | bash
 ```
+
+### Full server bootstrap
+
+For a fresh Linux host where you want **mihomo + the systemd unit + the
+daily refresh cron + clashctl** in one go, use the bootstrap script in
+[`setup/`](setup/):
+
+```bash
+SUBSCRIPTION_URL="https://your-provider/.../clash.yaml" \
+  curl -fsSL https://raw.githubusercontent.com/kvzn/clashctl/main/setup/install.sh | bash
+```
+
+See [`setup/README.md`](setup/README.md) for the full list of overrides,
+what's installed where, and how to uninstall.
 
 ## Configuration
 
@@ -272,6 +304,44 @@ Distinct from `clashctl reload` — `reload` hot-reloads the YAML in the
 running process via the API, `restart` is a full systemd restart that
 re-reads everything from scratch.
 
+## Cheat sheet
+
+```text
+# inspect
+clashctl info                        # mihomo version, mode, ports
+clashctl groups                      # every proxy group and its current pick
+clashctl proxies                     # every individual proxy with last delay
+clashctl proxies "⚡️ 代理"            # nodes inside one group
+clashctl status                      # systemd unit state
+
+# change (persistent — survives systemctl restart + subscription refresh)
+clashctl mode global                 # routing mode
+clashctl select "⚡️ 代理" "x1.0 香港 - 中转4"
+
+# measure
+clashctl test                        # default ipinfo.io/ip, PROXY vs DIRECT
+clashctl test youtube.com            # any URL; follows redirects, shows http code
+clashctl delay                       # parallel-probe every concrete proxy
+clashctl delay "🔄 自动"             # probe just one group
+
+# service control
+clashctl start | stop | restart      # sudo systemctl <action> clash.service
+clashctl reload                      # hot-reload yaml via API (no restart)
+
+# logs
+clashctl logs -n 50                  # recent 50 lines, formatted + colored
+clashctl logs -f                     # follow
+clashctl logs -f | grep openai       # filter
+clashctl logs --raw -f               # original journalctl format
+```
+
+Env knobs that affect every command:
+
+```bash
+export CLASH_API=http://127.0.0.1:9090
+export CLASH_YAML=$HOME/clash/config.yaml
+```
+
 ## Persistence
 
 mihomo's external-controller treats most config changes as **runtime-only** —
@@ -288,10 +358,20 @@ they revert on the next service restart. `clashctl` patches the YAML as well:
 If you maintain a refresher script that downloads a fresh YAML from your
 subscription provider and overwrites the local config, your custom `mode` and
 node selections in YAML are lost. To preserve them, snapshot the **runtime
-state** from the running mihomo before activating the new file:
+state** from the running mihomo before activating the new file.
+
+This repo ships a ready-to-use refresher at
+[`setup/refresh.sh`](setup/refresh.sh) that does exactly this — fetch fresh
+YAML, query the live API for mode + selector picks, re-apply them to the new
+file, then hot-reload through the API. The
+[full bootstrap installer](#full-server-bootstrap) wires it into a daily cron
+automatically.
+
+If you'd rather wire the preservation into your own existing refresher, the
+critical snippet is:
 
 ```bash
-# inside your refresh script, after downloading $TMP and before mv:
+# after downloading $TMP, before activating it:
 python3 - "$TMP" "$CLASH_API" <<'PY'
 import json, urllib.request, yaml, sys
 tmp, api = sys.argv[1], sys.argv[2]
