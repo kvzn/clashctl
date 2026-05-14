@@ -1,0 +1,24 @@
+[Unit]
+Description=Clash proxy (mihomo)
+Documentation=https://github.com/MetaCubeX/mihomo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__CLASH_USER__
+Group=__CLASH_USER__
+WorkingDirectory=__CLASH_DIR__
+ExecStart=__CLASH_DIR__/mihomo -d __CLASH_DIR__ -f __CLASH_DIR__/__CLASH_CONFIG__
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+# Hardening (kept minimal so binding ports + reading config still works)
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=__CLASH_DIR__
+
+[Install]
+WantedBy=multi-user.target

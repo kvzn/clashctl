@@ -37,6 +37,15 @@ a virtualenv or `pip install` anything.
 
 ## Install
 
+Two install paths depending on what you already have:
+
+| You have… | Use… |
+| --- | --- |
+| A running mihomo with `external-controller` exposed | the **client-only** installer below — drops just `clashctl` |
+| A fresh server, want mihomo + systemd + cron + clashctl together | the **full bootstrap** in [`setup/`](setup/) |
+
+### Client-only
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kvzn/clashctl/main/install.sh | bash
 ```
