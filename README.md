@@ -99,9 +99,10 @@ URLTest   🔄 自动                   → x1.0 香港 - 中转4               
 Selector  🚫 屏蔽                   → REJECT                       (1 nodes)
 ```
 
-### `clashctl proxies <group>`
+### `clashctl proxies [<group>]`
 
-Lists every node inside a specific group. The current selection is marked with `→`.
+With a group argument: lists every node inside that group, current selection
+marked with `→`.
 
 ```
 $ clashctl proxies "⚡️ 代理"
@@ -111,6 +112,19 @@ $ clashctl proxies "⚡️ 代理"
    x1.0 香港 - 中转2
    x1.0 美西 - 中转2
    ...
+```
+
+Without an argument: lists every individual proxy across the whole
+configuration — type, name, and last known delay. Groups
+(`Selector`/`URLTest`/...) and synthetic proxies
+(`Direct`/`Reject`/`RejectDrop`/`Pass`/`Compatible`) are filtered out.
+
+```
+$ clashctl proxies
+  Shadowsocks  x1.0 美西 - 直连1                        0 ms
+  Trojan       x1.0 香港 - 中转1                        252 ms
+  Trojan       x1.0 日本 - 中转3                        315 ms
+  ...
 ```
 
 ### `clashctl select <group> <node>`
@@ -189,11 +203,13 @@ DIRECT: 120.229.60.231
 Identical IPs typically mean the target hit a `DIRECT` rule (proxy didn't change
 the egress). To force proxied egress for testing, `clashctl mode global` first.
 
-### `clashctl delay <group>`
+### `clashctl delay [<group>]`
 
-Measures HTTP latency of every node in the group (probe URL:
-`https://www.gstatic.com/generate_204`, 3 s timeout per node). Sorted
-fastest-first; timed-out nodes appear last with `0 ms`.
+Measures HTTP latency to `https://www.gstatic.com/generate_204` (3 s timeout
+per node). Sorted fastest-first; timed-out nodes appear last with `0 ms`.
+
+With a group argument: tests every node in that group (server-side, via
+`/group/<name>/delay`):
 
 ```
 $ clashctl delay "🔄 自动"
@@ -204,6 +220,38 @@ $ clashctl delay "🔄 自动"
   ...
       0 ms   x1.0 莫斯科 - 中转1
 ```
+
+Without an argument: probes **every individual proxy** in parallel (8 worker
+threads, client-side fan-out via `/proxies/<name>/delay`). Useful for getting
+a fresh picture of the whole pool without restarting URLTest groups:
+
+```
+$ clashctl delay
+  135 ms   x1.0 香港 - 中转6
+  143 ms   x1.0 香港 - 中转5
+  244 ms   x1.0 香港 - 中转2
+  309 ms   x1.0 日本 - 中转3
+  ...
+      0 ms   x1.0 美西 - 中转5
+```
+
+### `clashctl start | stop | restart | status`
+
+Thin wrappers around `systemctl <action> clash.service`:
+
+```bash
+clashctl start      # sudo systemctl start clash
+clashctl stop       # sudo systemctl stop clash
+clashctl restart    # sudo systemctl restart clash
+clashctl status     # systemctl status clash --no-pager  (read-only, no sudo)
+```
+
+`start` / `stop` / `restart` call `sudo` and need passwordless sudo (or will
+prompt for password). `status` is read-only and works without sudo.
+
+Distinct from `clashctl reload` — `reload` hot-reloads the YAML in the
+running process via the API, `restart` is a full systemd restart that
+re-reads everything from scratch.
 
 ## Persistence
 

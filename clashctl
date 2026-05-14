@@ -18,6 +18,7 @@ Environment overrides:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import re
 import subprocess
@@ -34,6 +35,8 @@ YAML_PATH = Path(
     os.environ.get("CLASH_YAML", str(Path.home() / "clash" / "AgentNEO_wLUA.yaml"))
 )
 GROUP_TYPES = ("Selector", "URLTest", "Fallback", "LoadBalance")
+# Synthetic / built-in proxies exposed by the API that aren't real upstream nodes.
+_BUILTIN_PROXIES = ("Direct", "Reject", "RejectDrop", "Pass", "Compatible")
 
 # mihomo emits logfmt lines like:
 #   time="2026-05-11T13:13:42.144+08:00" level=info msg="..."
@@ -103,13 +106,33 @@ def groups():
 
 
 @cli.command()
-@click.argument("group")
+@click.argument("group", required=False)
 def proxies(group):
-    """List nodes inside a group."""
-    d = _request("GET", f"/proxies/{_enc(group)}")
-    click.echo(f"{d['name']} ({d['type']}) → {d.get('now', '-')}")
-    for p in d.get("all", []):
-        click.echo((" → " if p == d.get("now") else "   ") + p)
+    """List nodes inside a group, or every individual proxy when no group is given.
+
+    Without arguments: lists all concrete proxies (Trojan / Shadowsocks /
+    VMess / etc., excluding groups and the synthetic Direct / Reject) with
+    their type and last-known delay.
+    """
+    if group:
+        d = _request("GET", f"/proxies/{_enc(group)}")
+        click.echo(f"{d['name']} ({d['type']}) → {d.get('now', '-')}")
+        for p in d.get("all", []):
+            click.echo((" → " if p == d.get("now") else "   ") + p)
+        return
+
+    data = _request("GET", "/proxies")["proxies"]
+    rows = []
+    for name, info in data.items():
+        t = info["type"]
+        if t in GROUP_TYPES or t in _BUILTIN_PROXIES:
+            continue
+        history = info.get("history", [])
+        last = f"{history[-1].get('delay', 0)} ms" if history else "-"
+        rows.append((t, name, last))
+    rows.sort()
+    for t, name, last in rows:
+        click.echo(f"  {t:<12} {name:<36} {last}")
 
 
 @cli.command()
@@ -226,14 +249,92 @@ def test(url):
             click.echo(f"{label}: (failed: {e})")
 
 
+def _delay_one(name: str, timeout_ms: int = 3000) -> int:
+    """Probe one concrete proxy. Returns delay in ms, or 0 on failure."""
+    try:
+        r = httpx.get(
+            f"{API}/proxies/{_enc(name)}/delay",
+            params={
+                "url": "https://www.gstatic.com/generate_204",
+                "timeout": timeout_ms,
+            },
+            timeout=(timeout_ms / 1000) + 2,
+        )
+        if r.status_code == 200:
+            return r.json().get("delay", 0)
+    except Exception:
+        pass
+    return 0
+
+
 @cli.command()
-@click.argument("group")
+@click.argument("group", required=False)
 def delay(group):
-    """Measure delay of every node in a group."""
-    test_url = urllib.parse.quote("https://www.gstatic.com/generate_204", safe="")
-    d = _request("GET", f"/group/{_enc(group)}/delay?url={test_url}&timeout=3000")
+    """Measure delay of nodes in a group, or every concrete proxy without arg.
+
+    Without arguments: probes every individual proxy in parallel (8 workers)
+    and prints results sorted fastest-first; timeouts appear at the end with
+    `0 ms`.
+    """
+    if group:
+        test_url = urllib.parse.quote(
+            "https://www.gstatic.com/generate_204", safe=""
+        )
+        d = _request(
+            "GET", f"/group/{_enc(group)}/delay?url={test_url}&timeout=3000"
+        )
+    else:
+        data = _request("GET", "/proxies")["proxies"]
+        concrete = [
+            n
+            for n, info in data.items()
+            if info["type"] not in GROUP_TYPES
+            and info["type"] not in _BUILTIN_PROXIES
+        ]
+        if not concrete:
+            click.echo("no concrete proxies found", err=True)
+            return
+        d = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_delay_one, n): n for n in concrete}
+            for fut in concurrent.futures.as_completed(futures):
+                d[futures[fut]] = fut.result()
+
     for name, ms in sorted(d.items(), key=lambda x: (x[1] == 0, x[1])):
         click.echo(f"  {ms:>5} ms   {name}")
+
+
+def _systemctl(action: str) -> None:
+    """Delegate to systemctl on clash.service. Uses sudo for state changes."""
+    if action == "status":
+        cmd = ["systemctl", action, "clash.service", "--no-pager"]
+    else:
+        cmd = ["sudo", "systemctl", action, "clash.service"]
+    os.execvp(cmd[0], cmd)
+
+
+@cli.command()
+def start():
+    """Start clash systemd service (sudo systemctl start clash)."""
+    _systemctl("start")
+
+
+@cli.command()
+def stop():
+    """Stop clash systemd service (sudo systemctl stop clash)."""
+    _systemctl("stop")
+
+
+@cli.command()
+def restart():
+    """Restart clash systemd service (sudo systemctl restart clash)."""
+    _systemctl("restart")
+
+
+@cli.command()
+def status():
+    """Show clash systemd service status (systemctl status clash)."""
+    _systemctl("status")
 
 
 if __name__ == "__main__":
