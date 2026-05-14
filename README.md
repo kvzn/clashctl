@@ -192,16 +192,26 @@ the source if yours is named differently.)
 ### `clashctl test [<url>]`
 
 Fetches `<url>` (default `https://ipinfo.io/ip`) twice — once through
-`127.0.0.1:7890`, once direct — to confirm routing behaviour.
+`127.0.0.1:7890`, once direct — and surfaces HTTP status, time, downloaded
+size and a body preview. Follows redirects (`-L`) and auto-prepends `https://`
+if no scheme is given, so `clashctl test youtube.com` works.
 
 ```
-$ clashctl test
-PROXY : 152.32.196.118
-DIRECT: 120.229.60.231
+$ clashctl test youtube.com
+PROXY : 200 2.65s 709244B  <!DOCTYPE html><html style="font-size: 10px;font-family: Roboto, Arial, sans-ser…
+DIRECT: 000 6.00s 0B
 ```
 
-Identical IPs typically mean the target hit a `DIRECT` rule (proxy didn't change
-the egress). To force proxied egress for testing, `clashctl mode global` first.
+```
+$ clashctl test         # default ipinfo.io/ip
+PROXY : 200 0.35s 14B  152.32.196.118
+DIRECT: 200 0.34s 14B  120.229.60.231
+```
+
+Identical IPs typically mean the target hit a `DIRECT` rule (proxy didn't
+change the egress). To force proxied egress for testing, `clashctl mode
+global` first. HTTP code `000` means the request never completed (e.g.
+connect timeout / GFW block / DNS failure).
 
 ### `clashctl delay [<group>]`
 

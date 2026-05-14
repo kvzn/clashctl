@@ -235,16 +235,34 @@ def logs(ctx, raw):
 @cli.command()
 @click.argument("url", required=False, default="https://ipinfo.io/ip")
 def test(url):
-    """Compare proxied vs direct fetch."""
-    for label, proxy_args in (("PROXY ", ["-x", "http://127.0.0.1:7890"]), ("DIRECT", [])):
+    """Compare proxied vs direct fetch.
+
+    Surfaces HTTP status, time and downloaded size — so a 200 with empty
+    body and a connection failure don't both look like "(empty)". Follows
+    redirects (-L) and auto-prepends https:// when no scheme is given.
+    """
+    if "://" not in url:
+        url = "https://" + url
+    sep = "<<<CSEP>>>"
+    fmt = f"{sep}%{{http_code}} %{{time_total}}s %{{size_download}}B"
+
+    for label, proxy_args in (
+        ("PROXY ", ["-x", "http://127.0.0.1:7890"]),
+        ("DIRECT", []),
+    ):
         try:
             r = subprocess.run(
-                ["curl", "-sS", "--max-time", "6", *proxy_args, url],
+                ["curl", "-sSL", "--max-time", "6", "-w", fmt, *proxy_args, url],
                 capture_output=True,
                 text=True,
                 timeout=8,
             )
-            click.echo(f"{label}: {r.stdout.strip() or '(empty)'}")
+            body, _, stats = r.stdout.rpartition(sep)
+            body = body.strip().replace("\n", " ")
+            preview = (
+                f"  {body[:80]}{'…' if len(body) > 80 else ''}" if body else ""
+            )
+            click.echo(f"{label}: {stats.strip() or '(no response)'}{preview}")
         except Exception as e:
             click.echo(f"{label}: (failed: {e})")
 
